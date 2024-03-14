@@ -1,0 +1,46 @@
+settings {
+   nodaemon = true,
+}
+
+hosts = {
+    --{ ip='dm-c08', port=22 },
+    --{ ip='dm-c07', port=22 },
+    --{ ip='dm-c04', port=22 },
+    { ip='genoa', port=22 },
+    { ip='c04', port=22 },
+    { ip='c06', port=22 },
+    { ip='c07', port=22 },
+    { ip='c08', port=22 },
+    { ip='dgx01.lab.dm.informatik.tu-darmstadt.de', port=22 },
+    { ip='ec2-35-158-90-138.eu-central-1.compute.amazonaws.com', port=22}
+
+}
+
+
+
+for _, host in ipairs(hosts)
+do
+  sync {
+    default.rsyncssh,
+    source = ".",
+    targetdir = "./disraptor-rs",
+    host = host.ip,
+    delay = 0,
+    ssh = {
+      port = host.port
+    },
+    rsync = {
+      perms = true,
+    },
+	 delete = false,
+    filter = {
+      '- test_singest',
+      '- test_ssd.img',
+      '- zig-cache/',
+      '- zig-out/',
+      '- target/',
+      '- .tbl',
+      '- benchmark/csv/',
+    },
+  }
+end

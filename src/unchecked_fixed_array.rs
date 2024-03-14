@@ -3,6 +3,7 @@ use std::cell::UnsafeCell;
 /// This data structure is used as a building block in our system
 /// It provides uncchecked access to an array from multiple threads.
 /// Where uncecked here means not borrow checked.
+#[derive(Debug)]
 pub struct UncheckedFixedArray<T> {
     data: Box<[UnsafeCell<T>]>,
 }
@@ -39,7 +40,8 @@ impl<T: Default> UncheckedFixedArray<T> {
     /// The caller must ensure that:
     /// - No other mutable references to the accessed element are alive.
     /// - The access does not lead to data races or violates Rust's aliasing rules.
-    unsafe fn get_mut(&self, index: usize) -> &mut T {
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_mut(&self, index: usize) -> &mut T {
         let cell = self.data.get_unchecked(index);
         &mut *cell.get()
     }
@@ -51,7 +53,7 @@ impl<T: Default> UncheckedFixedArray<T> {
     ///
     /// # Safety
     /// Same as `get_mut`
-    unsafe fn get(&self, index: usize) -> &T {
+    pub unsafe fn get(&self, index: usize) -> &T {
         let cell = self.data.get_unchecked(index);
         &*cell.get()
     }
