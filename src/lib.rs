@@ -100,6 +100,7 @@ pub struct ProducerHandle<'a, T, const SIZE: usize> {
 }
 
 impl<'a, T: Default, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
+    #[inline(always)]
     pub fn prepare_batch(&mut self, batch_size: usize) {
         assert!(batch_size > 0);
         assert!(batch_size <= SIZE);
@@ -123,6 +124,7 @@ impl<'a, T: Default, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
         self.batch_end = claimed_batch_end;
     }
 
+    #[inline(always)]
     pub fn get_next_prepared(&mut self) -> Option<&mut T> {
         assert!(self.batch_begin <= self.current_slot);
         if self.current_slot <= self.batch_end {
@@ -136,6 +138,7 @@ impl<'a, T: Default, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
         }
         None
     }
+    #[inline(always)]
     pub fn commit_batch(&mut self) {
         assert_eq!(self.current_slot - 1, self.batch_end);
         let expected_sequence = self.batch_begin - 1;
@@ -157,6 +160,7 @@ pub struct ConsumerHandle<'a, T, const SIZE: usize> {
 }
 
 impl<'a, T: Default, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
+    #[inline(always)]
     pub fn get_next_slot(&mut self) -> Option<(&mut T, usize)> {
         if self.current_slot >= self.cached_last_predecessor {
             self.cached_last_predecessor = self
@@ -179,6 +183,7 @@ impl<'a, T: Default, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
         None
     }
 
+    #[inline(always)]
     pub fn synchronize(&mut self) {
         let current_counter = self
             .consumed_slot_tail

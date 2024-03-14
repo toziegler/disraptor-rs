@@ -41,6 +41,7 @@ impl<T: Default> UncheckedFixedArray<T> {
     /// - No other mutable references to the accessed element are alive.
     /// - The access does not lead to data races or violates Rust's aliasing rules.
     #[allow(clippy::mut_from_ref)]
+    #[inline(always)]
     pub unsafe fn get_mut(&self, index: usize) -> &mut T {
         let cell = self.data.get_unchecked(index);
         &mut *cell.get()
@@ -53,6 +54,7 @@ impl<T: Default> UncheckedFixedArray<T> {
     ///
     /// # Safety
     /// Same as `get_mut`
+    #[inline(always)]
     pub unsafe fn get(&self, index: usize) -> &T {
         let cell = self.data.get_unchecked(index);
         &*cell.get()
