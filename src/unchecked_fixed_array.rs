@@ -1,11 +1,12 @@
 use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
 
 /// This data structure is used as a building block in our system
 /// It provides uncchecked access to an array from multiple threads.
 /// Where uncecked here means not borrow checked.
 #[derive(Debug)]
 pub struct UncheckedFixedArray<T> {
-    data: Box<[UnsafeCell<T>]>,
+    data: Box<[MaybeUninit<UnsafeCell<T>>]>,
 }
 
 impl<T> UncheckedFixedArray<T> {
@@ -24,6 +25,8 @@ impl<T> UncheckedFixedArray<T> {
 
         unsafe {
             // SAFETY: We have reserved the capacity above
+            // And MaybeUninit doe not require initialization
+            // see https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
             temporary_vec.set_len(capacity);
         }
 
@@ -31,6 +34,12 @@ impl<T> UncheckedFixedArray<T> {
             data: temporary_vec.into_boxed_slice(),
         }
     }
+
+    pub unsafe fn write(&self, index: usize, value: T) {
+        let m_uninit = self.data.get_unchecked(index);
+        UnsafeCell::raw_get(m_uninit.as_ptr()).write(value);
+    }
+
     /// Provides mutable access to the element at the specified `sequence`
     /// index within the array. The caller must ensure that the index is
     /// within bounds and that no other mutable rferences to the same element
@@ -41,11 +50,12 @@ impl<T> UncheckedFixedArray<T> {
     /// The caller must ensure that:
     /// - No other mutable references to the accessed element are alive.
     /// - The access does not lead to data races or violates Rust's aliasing rules.
+    /// - Caller must have called WRITE
     #[allow(clippy::mut_from_ref)]
     #[inline(always)]
     pub unsafe fn get_mut(&self, index: usize) -> &mut T {
         let cell = self.data.get_unchecked(index);
-        &mut *cell.get()
+        &mut *cell.assume_init_ref().get()
     }
 
     /// Provides immutable access to the element at the specified `sequence`
@@ -58,9 +68,63 @@ impl<T> UncheckedFixedArray<T> {
     #[inline(always)]
     pub unsafe fn get(&self, index: usize) -> &T {
         let cell = self.data.get_unchecked(index);
-        &*cell.get()
+        &*cell.assume_init_ref().get()
     }
 }
 // The thread safe access must be ensured otherwise e.g. by mutex or something else
 unsafe impl<T: Send> Send for UncheckedFixedArray<T> {}
 unsafe impl<T: Sync> Sync for UncheckedFixedArray<T> {}
+
+#[cfg(test)]
+mod test {
+    use std::cell::Cell;
+
+    use super::UncheckedFixedArray;
+
+    #[test]
+    fn drop_uninitialized() {
+        struct IncrementOnDrop<'a> {
+            cell: &'a Cell<i32>,
+        }
+
+        impl Drop for IncrementOnDrop<'_> {
+            fn drop(&mut self) {
+                let before = self.cell.get();
+                self.cell.set(before + 1);
+            }
+        }
+
+        let array = UncheckedFixedArray::<IncrementOnDrop>::new(1024);
+        drop(array);
+    }
+
+    #[test]
+    fn drop_initialized() {
+        struct IncrementOnDrop<'a> {
+            cell: &'a Cell<i32>,
+        }
+
+        impl Drop for IncrementOnDrop<'_> {
+            fn drop(&mut self) {
+                let before = self.cell.get();
+                self.cell.set(before + 1);
+            }
+        }
+
+        let array = UncheckedFixedArray::<IncrementOnDrop>::new(1024);
+        let cell = Cell::new(0);
+        {
+            unsafe { array.write(0, IncrementOnDrop { cell: &cell }) };
+            unsafe { array.get(0) };
+            drop(array);
+        }
+    }
+
+    #[test]
+    fn initialize_correctly() {
+        let array = UncheckedFixedArray::<usize>::new(1024);
+        unsafe { array.write(0, 1) };
+        let number = unsafe { array.get(0) };
+        println!("{}", number);
+    }
+}
