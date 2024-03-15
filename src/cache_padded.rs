@@ -1,7 +1,7 @@
 use super::constants;
 use core::fmt;
 /// Stolen from crossbeam_utils::CachePadded
-use static_assertions::{self, const_assert_eq};
+use static_assertions::const_assert_eq;
 use std::{
     ops::{Deref, DerefMut},
     sync::atomic::AtomicUsize,

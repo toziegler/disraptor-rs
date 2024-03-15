@@ -223,6 +223,24 @@ mod tests {
         while let Some(_) = producer_handle.get_next_prepared() {}
         producer_handle.commit_batch();
     }
+    #[test]
+    fn multiple_elements() {
+        let dis = Disraptor::<i32, 12>::new(&[1]);
+        let mut producer_handle = dis.get_producer_handle();
+        let mut consumer_handle = dis.get_consumer_handle(0, 0);
+        producer_handle.prepare_batch(10);
+        let mut counter = 0;
+        while let Some(msg) = producer_handle.get_next_prepared() {
+            *msg = counter;
+            counter += 1;
+        }
+        producer_handle.commit_batch();
+        counter = 0;
+        while let Some((msg, _)) = consumer_handle.get_next_slot() {
+            assert_eq!(*msg, counter);
+            counter += 1;
+        }
+    }
 }
 
 // Topology = {("WAL", 2), ("PrefixSum", 1)}

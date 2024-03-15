@@ -1,4 +1,4 @@
-use disraptor_rs::{Disraptor, ProducerHandle};
+use disraptor_rs::Disraptor;
 use rand::prelude::*;
 use std::{sync::Arc, time::Instant};
 
