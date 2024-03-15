@@ -17,7 +17,7 @@ pub struct Disraptor<T, const SIZE: usize> {
     topology: Vec<u64>,
 }
 
-impl<T: Default, const SIZE: usize> Disraptor<T, SIZE> {
+impl<T, const SIZE: usize> Disraptor<T, SIZE> {
     const INITIAL_PRODUCER_SLOT: usize = SIZE;
     const INITIAL_CONSUMER_SLOT: usize = SIZE - 1;
 
@@ -99,7 +99,7 @@ pub struct ProducerHandle<'a, T, const SIZE: usize> {
     batch_end: usize,
 }
 
-impl<'a, T: Default, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
+impl<'a, T, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
     #[inline(always)]
     pub fn prepare_batch(&mut self, batch_size: usize) {
         assert!(batch_size > 0);
@@ -159,7 +159,7 @@ pub struct ConsumerHandle<'a, T, const SIZE: usize> {
     current_slot: usize,
 }
 
-impl<'a, T: Default, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
+impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
     #[inline(always)]
     pub fn get_next_slot(&mut self) -> Option<(&mut T, usize)> {
         if self.current_slot >= self.cached_last_predecessor {

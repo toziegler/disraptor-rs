@@ -8,7 +8,7 @@ pub struct UncheckedFixedArray<T> {
     data: Box<[UnsafeCell<T>]>,
 }
 
-impl<T: Default> UncheckedFixedArray<T> {
+impl<T> UncheckedFixedArray<T> {
     /// Creates a new instance of `UncheckedFixedArray` with a fixed size,
     /// initializing each element using the default constructor of type `T`.
     /// The size of the array is determined by the `HOT_RING_SIZE` constant.
@@ -22,8 +22,9 @@ impl<T: Default> UncheckedFixedArray<T> {
             .try_reserve_exact(capacity)
             .expect("Out of memory error ");
 
-        for _ in 0..capacity {
-            temporary_vec.push(UnsafeCell::default());
+        unsafe {
+            // SAFETY: We have reserved the capacity above
+            temporary_vec.set_len(capacity);
         }
 
         UncheckedFixedArray {
