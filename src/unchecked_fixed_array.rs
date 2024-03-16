@@ -4,7 +4,7 @@ use std::mem::MaybeUninit;
 /// This data structure is used as a building block in our system
 /// It provides uncchecked access to an array from multiple threads.
 /// Where uncecked here means not borrow checked.
-/// SAFETY: This data structure does not DROP the values
+/// Note: This data structure does not DROP the values
 #[derive(Debug)]
 pub struct UncheckedFixedArray<T> {
     data: Box<[MaybeUninit<UnsafeCell<T>>]>,
@@ -36,9 +36,15 @@ impl<T> UncheckedFixedArray<T> {
             data: temporary_vec.into_boxed_slice(),
         }
     }
-
+    /// Initializes the element at `index`.
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - Index is not out-of-bound
+    /// - The access does not lead to data races
     pub unsafe fn write(&self, index: usize, value: T) {
         let m_uninit = self.data.get_unchecked(index);
+        //need to use `get_raw`:  https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html#method.raw_get
         UnsafeCell::raw_get(m_uninit.as_ptr()).write(value);
     }
 
@@ -50,6 +56,7 @@ impl<T> UncheckedFixedArray<T> {
     /// # Safety
     ///
     /// The caller must ensure that:
+    /// - Index is not out-of-bound
     /// - No other mutable references to the accessed element are alive.
     /// - The access does not lead to data races or violates Rust's aliasing rules.
     /// - Caller must have called WRITE

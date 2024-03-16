@@ -9,6 +9,8 @@ pub use unchecked_fixed_array::UncheckedFixedArray;
 
 #[allow(dead_code)]
 #[derive(Debug)]
+// Does currently not implement a custom Drop.
+// This means that elements that implement `Drop` are on their own
 pub struct Disraptor<T, const SIZE: usize> {
     message_buffer: UncheckedFixedArray<T>, // backing buffer
     released_slots: [CachePadded<AtomicUsize>; 1],
@@ -68,7 +70,6 @@ impl<T, const SIZE: usize> Disraptor<T, SIZE> {
                 predecessors_tail: &self.released_slots[0..],
                 cached_last_predecessor: Self::INITIAL_CONSUMER_SLOT,
                 consumed_slot_tail: &self.consumer_counters[thread_id],
-                current_slot: Self::INITIAL_CONSUMER_SLOT,
             };
         }
 
@@ -81,12 +82,12 @@ impl<T, const SIZE: usize> Disraptor<T, SIZE> {
             predecessors_tail: &self.consumer_counters[begin as usize..end as usize],
             cached_last_predecessor: Self::INITIAL_CONSUMER_SLOT,
             consumed_slot_tail: &self.consumer_counters[end as usize + thread_id],
-            current_slot: Self::INITIAL_CONSUMER_SLOT,
         }
     }
-
-    // TODO: Custom drop
 }
+
+// if drop then every batch and handle are gone
+// check unconsumed elemnets and drop them
 
 pub struct ProducerBatch<'a, 'b, T, const SIZE: usize> {
     handle: &'b ProducerHandle<'a, T, SIZE>,
@@ -95,10 +96,7 @@ pub struct ProducerBatch<'a, 'b, T, const SIZE: usize> {
     current: usize,
 }
 
-impl<'a, 'b, T, const SIZE: usize> ProducerBatch<'a, 'b, T, SIZE>
-where
-    'b: 'a,
-{
+impl<'a, 'b, T, const SIZE: usize> ProducerBatch<'a, 'b, T, SIZE> {
     pub fn write_for_all<F>(&mut self, mut produce_element_fn: F)
     where
         F: FnMut() -> T,
@@ -113,7 +111,7 @@ where
         }
         self.current = self.end + 1;
     }
-
+    #[must_use]
     pub fn write_next(&mut self, value: T) -> bool {
         debug_assert!(self.begin <= self.current);
         if self.current <= self.end {
@@ -128,11 +126,13 @@ where
         }
         false
     }
-
-    // consumes self
-    pub fn release(self) {
+}
+// Drops the batch and synchronizes the atomics, but is blocking
+impl<'a, 'b, T, const SIZE: usize> Drop for ProducerBatch<'a, 'b, T, SIZE> {
+    fn drop(&mut self) {
         assert_eq!(self.current - 1, self.end);
         let expected_sequence = self.begin - 1;
+        // NOTE: Blocking
         while self
             .handle
             .released_slots
@@ -187,10 +187,7 @@ pub struct ConsumerBatch<'a, 'b, T, const SIZE: usize> {
     end: usize,
     current: usize,
 }
-impl<'a, 'b, T, const SIZE: usize> ConsumerBatch<'a, 'b, T, SIZE>
-where
-    'b: 'a,
-{
+impl<'a, 'b, T, const SIZE: usize> ConsumerBatch<'a, 'b, T, SIZE> {
     pub fn get_mut_for_all<F>(&mut self, mut consumer_fn: F)
     where
         F: FnMut(&mut T, usize),
@@ -245,7 +242,10 @@ where
         }
         None
     }
-    pub fn release(self) {
+}
+
+impl<'a, 'b, T, const SIZE: usize> Drop for ConsumerBatch<'a, 'b, T, SIZE> {
+    fn drop(&mut self) {
         let current_counter = self
             .handle
             .consumed_slot_tail
@@ -258,10 +258,9 @@ where
             return;
         }
         // TODO: Could be a simple store right?
-        self.handle.consumed_slot_tail.fetch_add(
-            self.current - current_counter,
-            std::sync::atomic::Ordering::Release,
-        );
+        self.handle
+            .consumed_slot_tail
+            .store(self.current, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -270,7 +269,6 @@ pub struct ConsumerHandle<'a, T, const SIZE: usize> {
     predecessors_tail: &'a [CachePadded<AtomicUsize>],
     cached_last_predecessor: usize,
     consumed_slot_tail: &'a CachePadded<AtomicUsize>,
-    current_slot: usize,
 }
 
 impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
@@ -303,32 +301,32 @@ mod tests {
     #[test]
     fn construction() {
         let dis = Disraptor::<i32, 12>::new(&[1, 2]);
-        let mut consumer_handle = dis.get_consumer_handle(0, 0);
+        _ = dis.get_consumer_handle(0, 0);
         let mut producer_handle = dis.get_producer_handle();
         let mut batch = producer_handle.prepare_batch(10);
         batch.write_for_all(|| 1);
-        batch.release();
     }
+
     #[test]
     fn multiple_elements() {
         let dis = Disraptor::<i32, 12>::new(&[1]);
         let mut producer_handle = dis.get_producer_handle();
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
-        let mut batch = producer_handle.prepare_batch(10);
         let mut counter = 0;
-        batch.write_for_all(|| {
-            let tmp = counter;
-            counter += 1;
-            tmp
-        });
-        batch.release();
+        {
+            let mut batch = producer_handle.prepare_batch(10);
+            batch.write_for_all(|| {
+                let tmp = counter;
+                counter += 1;
+                tmp
+            });
+        }
         counter = 0;
         let mut batch = consumer_handle.get_prepared_batch();
         batch.get_for_all(|msg, _| {
             assert_eq!(*msg, counter);
             counter += 1;
         });
-        batch.release();
         assert_eq!(counter, 10);
     }
     #[test]
@@ -338,20 +336,19 @@ mod tests {
         let mut producer_handle = dis.get_producer_handle();
         let batch = producer_handle.prepare_batch(0); // Empty batch
         assert!(batch.begin == batch.end); // Validate if the batch is indeed empty
-        batch.release(); // This should not cause any issue
     }
     #[test]
     fn max_size_batch() {
         let dis = Disraptor::<i32, 12>::new(&[1]);
         let mut producer_handle = dis.get_producer_handle();
-        let mut batch = producer_handle.prepare_batch(12); // Max size batch
         let mut counter = 0;
-        batch.write_for_all(|| {
-            counter += 1;
-            counter
-        });
-        batch.release();
-
+        {
+            let mut batch = producer_handle.prepare_batch(12); // Max size batch
+            batch.write_for_all(|| {
+                counter += 1;
+                counter
+            });
+        }
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
         let mut batch = consumer_handle.get_prepared_batch();
         counter = 0;
@@ -359,8 +356,34 @@ mod tests {
             counter += 1;
             assert_eq!(msg, counter);
         });
-        batch.release();
         assert_eq!(counter, 12);
+    }
+
+    #[test]
+    fn drop_uninitialized_disraptor() {
+        let cell = std::cell::Cell::new(0);
+
+        struct IncrementOnDrop<'a> {
+            cell: &'a std::cell::Cell<i32>,
+        }
+
+        impl Drop for IncrementOnDrop<'_> {
+            fn drop(&mut self) {
+                let before = self.cell.get();
+                self.cell.set(before + 1);
+            }
+        }
+
+        let dis = Disraptor::<IncrementOnDrop, 12>::new(&[1]);
+        {
+            let mut producer_handle = dis.get_producer_handle();
+            let mut _consumer_handle = dis.get_consumer_handle(0, 0);
+            let mut p_batch = producer_handle.prepare_batch(10);
+            p_batch.write_for_all(|| IncrementOnDrop { cell: &cell });
+        }
+        assert_eq!(cell.get(), 0);
+        drop(dis);
+        assert_eq!(cell.get(), 10);
     }
     #[test]
     fn concurrency_test() {
@@ -375,7 +398,6 @@ mod tests {
                     let mut producer_handle = dis_clone.get_producer_handle();
                     let mut batch = producer_handle.prepare_batch(10);
                     batch.write_for_all(|| id);
-                    batch.release();
                 })
             })
             .collect();
@@ -398,21 +420,20 @@ mod tests {
         let dis = Disraptor::<i32, 5>::new(&[1]);
         let mut producer_handle = dis.get_producer_handle();
         let mut batch = producer_handle.prepare_batch(5);
-        // This should panic because it tries to write beyond the buffer size
         batch.write_for_all(|| 99);
         assert_eq!(false, batch.write_next(100));
-        batch.release();
     }
     #[test]
     fn sequence_test() {
         let dis = Disraptor::<i32, 12>::new(&[1]);
         let mut producer_handle = dis.get_producer_handle();
-        let mut batch = producer_handle.prepare_batch(3);
         let values = [1, 2, 3];
-        for &val in &values {
-            assert!(batch.write_next(val));
+        {
+            let mut batch = producer_handle.prepare_batch(3);
+            for &val in &values {
+                assert!(batch.write_next(val));
+            }
         }
-        batch.release();
 
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
         let mut batch = consumer_handle.get_prepared_batch();
@@ -422,7 +443,6 @@ mod tests {
             idx += 1;
         });
         assert_eq!(idx, values.len());
-        batch.release();
     }
     #[test]
     #[should_panic(expected = "assertion failed")]
@@ -432,8 +452,3 @@ mod tests {
         producer_handle.prepare_batch(13); // This should panic
     }
 }
-
-// Topology = {("WAL", 2), ("PrefixSum", 1)}
-// get_consumer_handle(0, 0)
-// get_consumer_handle(0, 1)
-// get_consumer_handle(1, 0)

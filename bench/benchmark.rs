@@ -24,7 +24,6 @@ fn main() {
                 for _ in 0..PRODUCER_ITERATIONS {
                     let mut batch = producer_handle.prepare_batch(PRODUCER_BATCH_SIZE as usize);
                     batch.write_for_all(|| 1);
-                    batch.release();
                 }
             });
         }
@@ -40,7 +39,6 @@ fn main() {
                         assert_eq!(*msg, 1);
                         sum += *msg;
                     });
-                    c_batch.release();
                 }
             });
         }
@@ -74,7 +72,6 @@ fn main() {
                         assert_eq!(checksum_page, fill as u64 * 256);
                         all_sum += checksum_page;
                     });
-                    c_batch.release();
                 }
                 println!("checksum {}", all_sum);
                 println!("memcopys performed {}", sum);
@@ -102,7 +99,6 @@ fn main() {
                             );
                         }
                     });
-                    c_batch.release();
                 }
             });
         }
