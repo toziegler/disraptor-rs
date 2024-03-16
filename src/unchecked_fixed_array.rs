@@ -4,6 +4,7 @@ use std::mem::MaybeUninit;
 /// This data structure is used as a building block in our system
 /// It provides uncchecked access to an array from multiple threads.
 /// Where uncecked here means not borrow checked.
+/// SAFETY: This data structure does not DROP the values
 #[derive(Debug)]
 pub struct UncheckedFixedArray<T> {
     data: Box<[MaybeUninit<UnsafeCell<T>>]>,
@@ -23,10 +24,11 @@ impl<T> UncheckedFixedArray<T> {
             .try_reserve_exact(capacity)
             .expect("Out of memory error ");
 
+        // SAFETY: Safety Requirements for set_len are satisified
+        // 1.) We have reserved the capacity above
+        // 2.) And MaybeUninit doe not require initialization
+        // see https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
         unsafe {
-            // SAFETY: We have reserved the capacity above
-            // And MaybeUninit doe not require initialization
-            // see https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
             temporary_vec.set_len(capacity);
         }
 
@@ -96,28 +98,6 @@ mod test {
 
         let array = UncheckedFixedArray::<IncrementOnDrop>::new(1024);
         drop(array);
-    }
-
-    #[test]
-    fn drop_initialized() {
-        struct IncrementOnDrop<'a> {
-            cell: &'a Cell<i32>,
-        }
-
-        impl Drop for IncrementOnDrop<'_> {
-            fn drop(&mut self) {
-                let before = self.cell.get();
-                self.cell.set(before + 1);
-            }
-        }
-
-        let array = UncheckedFixedArray::<IncrementOnDrop>::new(1024);
-        let cell = Cell::new(0);
-        {
-            unsafe { array.write(0, IncrementOnDrop { cell: &cell }) };
-            unsafe { array.get(0) };
-            drop(array);
-        }
     }
 
     #[test]
