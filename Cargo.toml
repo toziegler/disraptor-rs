@@ -14,7 +14,7 @@ path = "bench/benchmark.rs"
 [[bin]]
 name = "memory_profiling"
 path = "bench/memory_profiling.rs"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ #See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 rand = "0.8.5"

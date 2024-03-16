@@ -8,17 +8,16 @@ fn main() {
     let mut producer_handle = disraptor.get_producer_handle();
     let mut consumer_handle = disraptor.get_consumer_handle(0, 0);
     for _ in 0..1000 {
-        producer_handle.prepare_batch(BATCH_SIZE as usize);
-        while let Some(msg) = producer_handle.get_next_prepared() {
-            *msg = 1;
-        }
-        producer_handle.commit_batch();
+        let mut p_batch = producer_handle.prepare_batch(BATCH_SIZE as usize);
+        p_batch.write_for_all(|| 1);
+        p_batch.release();
         let mut sum = 0;
-        while let Some((msg, _)) = consumer_handle.get_next_slot() {
+        let mut c_batch = consumer_handle.get_prepared_batch();
+        c_batch.get_for_all(|msg, _| {
             assert_eq!(*msg, 1);
             sum += *msg;
-        }
+        });
         assert_eq!(sum, BATCH_SIZE);
-        consumer_handle.synchronize();
+        c_batch.release();
     }
 }

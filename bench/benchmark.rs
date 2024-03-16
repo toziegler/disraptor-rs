@@ -22,11 +22,9 @@ fn main() {
             s.spawn(|| {
                 let mut producer_handle = disraptor.get_producer_handle();
                 for _ in 0..PRODUCER_ITERATIONS {
-                    producer_handle.prepare_batch(PRODUCER_BATCH_SIZE as usize);
-                    while let Some(msg) = producer_handle.get_next_prepared() {
-                        *msg = 1;
-                    }
-                    producer_handle.commit_batch();
+                    let mut batch = producer_handle.prepare_batch(PRODUCER_BATCH_SIZE as usize);
+                    batch.write_for_all(|| 1);
+                    batch.release();
                 }
             });
         }
@@ -37,11 +35,12 @@ fn main() {
                 let mut sum = 0;
                 while sum < OPERATIONS {
                     //println!("consumer 1");
-                    while let Some((msg, _)) = consumer_handle.get_next_slot() {
+                    let mut c_batch = consumer_handle.get_prepared_batch();
+                    c_batch.get_for_all(|msg, _| {
                         assert_eq!(*msg, 1);
                         sum += *msg;
-                    }
-                    consumer_handle.synchronize();
+                    });
+                    c_batch.release();
                 }
             });
         }
@@ -57,10 +56,11 @@ fn main() {
                 let mut all_sum = 0;
                 let mut sum = 0;
                 while sum < OPERATIONS {
-                    while let Some((msg, index)) = consumer_handle.get_next_slot() {
+                    let mut c_batch = consumer_handle.get_prepared_batch();
+                    c_batch.get_for_all(|msg, index| {
                         if index as u64 % CONSUMER_THREADS_2 != id {
                             sum += 1;
-                            continue;
+                            return;
                         }
                         assert_eq!(*msg, 1);
                         sum += *msg;
@@ -73,8 +73,8 @@ fn main() {
                             .sum();
                         assert_eq!(checksum_page, fill as u64 * 256);
                         all_sum += checksum_page;
-                    }
-                    consumer_handle.synchronize();
+                    });
+                    c_batch.release();
                 }
                 println!("checksum {}", all_sum);
                 println!("memcopys performed {}", sum);
@@ -87,7 +87,8 @@ fn main() {
                 let mut timer = std::time::Instant::now();
                 let mut sum = 0;
                 while sum < OPERATIONS {
-                    while let Some((msg, _)) = consumer_handle.get_next_slot() {
+                    let mut c_batch = consumer_handle.get_prepared_batch();
+                    c_batch.get_for_all(|msg, _| {
                         assert_eq!(*msg, 1);
                         sum += *msg;
                         if sum % 10_000_000 == 0 {
@@ -100,8 +101,8 @@ fn main() {
                                 10_000_000.0 / duration
                             );
                         }
-                    }
-                    consumer_handle.synchronize();
+                    });
+                    c_batch.release();
                 }
             });
         }
