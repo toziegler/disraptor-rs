@@ -10,7 +10,8 @@ pub use unchecked_fixed_array::UncheckedFixedArray;
 #[allow(dead_code)]
 #[derive(Debug)]
 // Does currently not implement a custom Drop.
-// This means that elements that implement `Drop` are on their own
+// HACK: Therefore, we added the trait bound, Copy
+//
 pub struct Disraptor<T, const SIZE: usize> {
     message_buffer: UncheckedFixedArray<T>, // backing buffer
     released_slots: [CachePadded<AtomicUsize>; 1],
@@ -19,7 +20,7 @@ pub struct Disraptor<T, const SIZE: usize> {
     topology: Vec<u64>,
 }
 
-impl<T, const SIZE: usize> Disraptor<T, SIZE> {
+impl<T: Copy + Clone, const SIZE: usize> Disraptor<T, SIZE> {
     const INITIAL_PRODUCER_SLOT: usize = SIZE;
     const INITIAL_CONSUMER_SLOT: usize = SIZE - 1;
 
@@ -359,32 +360,6 @@ mod tests {
         assert_eq!(counter, 12);
     }
 
-    #[test]
-    fn drop_uninitialized_disraptor() {
-        let cell = std::cell::Cell::new(0);
-
-        struct IncrementOnDrop<'a> {
-            cell: &'a std::cell::Cell<i32>,
-        }
-
-        impl Drop for IncrementOnDrop<'_> {
-            fn drop(&mut self) {
-                let before = self.cell.get();
-                self.cell.set(before + 1);
-            }
-        }
-
-        let dis = Disraptor::<IncrementOnDrop, 12>::new(&[1]);
-        {
-            let mut producer_handle = dis.get_producer_handle();
-            let mut _consumer_handle = dis.get_consumer_handle(0, 0);
-            let mut p_batch = producer_handle.prepare_batch(10);
-            p_batch.write_for_all(|| IncrementOnDrop { cell: &cell });
-        }
-        assert_eq!(cell.get(), 0);
-        drop(dis);
-        assert_eq!(cell.get(), 10);
-    }
     #[test]
     fn concurrency_test() {
         use std::sync::Arc;
