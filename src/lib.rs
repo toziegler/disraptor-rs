@@ -215,6 +215,40 @@ impl<'a, 'b, T, const SIZE: usize> ConsumerBatch<'a, 'b, T, SIZE> {
         }
         self.current = self.end;
     }
+    pub fn get_until_or_empty<F>(&mut self, mut consumer_fn: F)
+    where
+        F: FnMut(&T, usize) -> bool,
+    {
+        let mut consumed = self.current;
+        for index in self.current..self.end {
+            let element: &T =
+                unsafe { self.handle.disraptor.message_buffer.get((index + 1) % SIZE) };
+            if consumer_fn(element, index + 1) == false {
+                break;
+            }
+            consumed += 1;
+        }
+        self.current = consumed; // this includes the end as above, we alway point one further
+    }
+    pub fn get_mut_until_or_empty<F>(&mut self, mut consumer_fn: F)
+    where
+        F: FnMut(&T, usize) -> bool,
+    {
+        let mut consumed = self.current;
+        for index in self.current..self.end {
+            let element: &T = unsafe {
+                self.handle
+                    .disraptor
+                    .message_buffer
+                    .get_mut((index + 1) % SIZE)
+            };
+            if consumer_fn(element, index + 1) == false {
+                break;
+            }
+            consumed += 1;
+        }
+        self.current = consumed; // this includes the end as above, we alway point one further
+    }
 
     pub fn get_next_mut(&mut self) -> Option<(&'b mut T, usize)> {
         if self.current < self.end {
@@ -307,7 +341,42 @@ mod tests {
         let mut batch = producer_handle.prepare_batch(10);
         batch.write_for_all(|| 1);
     }
+    #[test]
+    fn multiple_elements_consumer_until() {
+        let dis = Disraptor::<i32, 12>::new(&[1]);
+        let mut producer_handle = dis.get_producer_handle();
+        let mut consumer_handle = dis.get_consumer_handle(0, 0);
+        let mut counter = 0;
+        {
+            let mut batch = producer_handle.prepare_batch(10);
+            batch.write_for_all(|| {
+                let tmp = counter;
+                counter += 1;
+                tmp
+            });
+        }
+        counter = 0;
+        let mut batch = consumer_handle.get_prepared_batch();
+        batch.get_until_or_empty(|msg, _| {
+            if counter == 5 {
+                return false;
+            }
+            assert_eq!(*msg, counter);
+            counter += 1;
+            true
+        });
+        batch.get_until_or_empty(|msg, _| {
+            assert_eq!(*msg, counter); // 6 5
+            counter += 1;
+            true
+        });
+        batch.get_until_or_empty(|msg, _| {
+            assert!(false, "should never happen"); // 6 5
+            true
+        });
 
+        assert_eq!(counter, 10);
+    }
     #[test]
     fn multiple_elements() {
         let dis = Disraptor::<i32, 12>::new(&[1]);
