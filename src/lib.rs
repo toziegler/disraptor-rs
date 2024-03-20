@@ -184,136 +184,17 @@ impl<'a, T, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
     }
 }
 
-/*
-pub struct ConsumerBatch<'a, 'b, T, const SIZE: usize> {
-    handle: &'b ConsumerHandle<'a, T, SIZE>,
-    begin: usize,
-    end: usize,
-    current: usize,
-}
-impl<'a, 'b, T, const SIZE: usize> ConsumerBatch<'a, 'b, T, SIZE> {
-    pub fn get_mut_for_all<F>(&mut self, mut consumer_fn: F)
-    where
-        F: FnMut(&mut T, usize),
-    {
-        for index in self.begin..self.end {
-            let element: &mut T = unsafe {
-                self.handle
-                    .disraptor
-                    .message_buffer
-                    .get_mut((index + 1) % SIZE)
-            };
-            consumer_fn(element, index + 1);
-        }
-        self.current = self.end;
-    }
-    pub fn get_for_all<F>(&mut self, mut consumer_fn: F)
-    where
-        F: FnMut(&T, usize),
-    {
-        for index in self.begin..self.end {
-            let element: &T =
-                unsafe { self.handle.disraptor.message_buffer.get((index + 1) % SIZE) };
-            consumer_fn(element, index + 1);
-        }
-        self.current = self.end;
-    }
-    pub fn get_until_or_empty<F>(&mut self, mut consumer_fn: F)
-    where
-        F: FnMut(&T, usize) -> bool,
-    {
-        let mut consumed = self.current;
-        for index in self.current..self.end {
-            let element: &T =
-                unsafe { self.handle.disraptor.message_buffer.get((index + 1) % SIZE) };
-            if consumer_fn(element, index + 1) == false {
-                break;
-            }
-            consumed += 1;
-        }
-        self.current = consumed; // this includes the end as above, we alway point one further
-    }
-    pub fn get_mut_until_or_empty<F>(&mut self, mut consumer_fn: F)
-    where
-        F: FnMut(&T, usize) -> bool,
-    {
-        let mut consumed = self.current;
-        for index in self.current..self.end {
-            let element: &T = unsafe {
-                self.handle
-                    .disraptor
-                    .message_buffer
-                    .get_mut((index + 1) % SIZE)
-            };
-            if consumer_fn(element, index + 1) == false {
-                break;
-            }
-            consumed += 1;
-        }
-        self.current = consumed; // this includes the end as above, we alway point one further
-    }
-
-    pub fn get_next_mut(&mut self) -> Option<(&'b mut T, usize)> {
-        if self.current < self.end {
-            self.current += 1;
-            let element: &mut T = unsafe {
-                self.handle
-                    .disraptor
-                    .message_buffer
-                    .get_mut(self.current % SIZE)
-            };
-            return Some((element, self.current));
-        }
-        None
-    }
-
-    pub fn get_next(&mut self) -> Option<(&'b T, usize)> {
-        if self.current < self.end {
-            self.current += 1;
-            let element: &T = unsafe {
-                self.handle
-                    .disraptor
-                    .message_buffer
-                    .get(self.current % SIZE)
-            };
-            return Some((element, self.current));
-        }
-        None
-    }
-}
-
-impl<'a, 'b, T, const SIZE: usize> Drop for ConsumerBatch<'a, 'b, T, SIZE> {
-    fn drop(&mut self) {
-        let current_counter = self
-            .handle
-            .consumed_slot_tail
-            .load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            current_counter <= self.current,
-            "message buffer not fully consumed"
-        );
-        if self.current - current_counter == 0 {
-            return;
-        }
-        // TODO: Could be a simple store right?
-        self.handle
-            .consumed_slot_tail
-            .store(self.current, std::sync::atomic::Ordering::Release);
-    }
-}
-*/
-
 struct Mutable<'m, 'h, T, const SIZE: usize> {
     handle: Option<&'m ConsumerHandle<'h, T, SIZE>>,
-    index_begin: usize,      // this is the begin of the mutable range and is fixed
-    index_consumed: usize,   // this is the index that tracks the actual consumption
+    index_begin: usize,    // this is the begin of the mutable range and is fixed
+    index_consumed: usize, // this is the index that tracks the actual consumption
     index_end_cached: usize, // this can be updated when we extend the range
-    // This makes the struct invariant over 'm. It's not required here, but can help the borrow
-    // checker infer lifetimes in some cases.
-    // Is this really ~invariant~?  &'a mut T
-    //                      covariant^      ^ invariant
-    //                      a: b
-    _data: PhantomData<&'m mut ()>,
+                           // This makes the struct invariant over 'm. It's not required here, but can help the borrow
+                           // checker infer lifetimes in some cases.
+                           // Is this really ~invariant~?  &'a mut T
+                           //                      covariant^      ^ invariant
+                           //                      a: b
+                           //_data: PhantomData<&'m mut ()>,
 }
 
 impl<T, const SIZE: usize> Drop for Mutable<'_, '_, T, SIZE> {
@@ -328,9 +209,25 @@ struct Immutable<'a> {
     end: usize,
 }
 
+impl Immutable<'_> {}
+// Note: Maintain the order here if it is important to you!
 impl Drop for Immutable<'_> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // check that we do not decrement the counter
+        if self.end
+            < self
+                .index_released
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            println!("we have a wrong order in sync");
+            return; // do not decrement the counter
+        }
+        println!("drop update end {}", self.end);
+        self.index_released
+            .store(self.end, std::sync::atomic::Ordering::Release);
+    }
 }
+
 struct Range<Mutability> {
     mutability: Mutability,
 }
@@ -340,10 +237,8 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
         &mut self,
         mut consumer_fn: impl FnMut(&T, usize) -> bool,
     ) {
-        println!("called consume function");
         let mut consumed = self.mutability.index_consumed;
         'outer: loop {
-            // check if the consumer fn is false
             for index in self.mutability.index_consumed..self.mutability.index_end_cached {
                 let element: &T = unsafe {
                     self.mutability
@@ -407,9 +302,7 @@ pub struct ConsumerHandle<'a, T, const SIZE: usize> {
 }
 
 impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
-    pub fn get_extensible_range<'m>(&'m mut self) -> Range<Mutable<'m, 'a, T, SIZE>> {
-        // update own state and cache the new end
-        // Update cache end if needed
+    fn update_cached_end(&mut self) {
         assert!(
             self.index_consumed.get() <= self.index_end_cached,
             "Our consumed index should never go past the end"
@@ -422,35 +315,30 @@ impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
                 .min()
                 .expect("Could not find minimum value on empty value");
         }
+    }
 
+    pub fn get_extensible_range<'m>(&'m mut self) -> Range<Mutable<'m, 'a, T, SIZE>> {
+        self.update_cached_end();
         Range {
             mutability: Mutable {
                 handle: Some(self),
                 index_begin: self.index_consumed.get(),
                 index_consumed: self.index_consumed.get(),
                 index_end_cached: self.index_end_cached,
-                _data: PhantomData,
+                //_data: PhantomData,
             },
         }
     }
 
-    /*pub fn get_prepared_batch<'b>(&'b mut self) -> ConsumerBatch<'a, 'b, T, SIZE> {
-        let begin = self.cached_last_predecessor;
-        // update last predecessor
-        self.cached_last_predecessor = self
-            .predecessors_tail
-            .iter()
-            .map(|number| number.load(std::sync::atomic::Ordering::SeqCst))
-            .min()
-            .expect("Could not find minimum value on empty value");
-
-        ConsumerBatch {
-            handle: self,
-            begin,
-            end: self.cached_last_predecessor,
-            current: begin,
+    pub fn get_fixed_range(&mut self) -> Range<Immutable> {
+        self.update_cached_end();
+        FixedRange {
+            handle: Some(self),
+            index_begin: self.index_consumed.get(),
+            index_consumed: self.index_consumed.get(),
+            index_end_cached: self.index_end_cached,
         }
-    }*/
+    }
 }
 
 // ProducerGuard are they guards?
@@ -496,7 +384,7 @@ mod tests {
             true
         });
         println!("range 1 done ");
-        let _ = range.immutable();
+        let immutable_range = range.immutable();
         let mut range2 = consumer_handle.get_extensible_range();
         range2.consume_until_empty_or_condition(|msg, _| {
             counter += 1;
@@ -511,8 +399,12 @@ mod tests {
         });
         println!("range 3 done ");
 
-        //let mut batch = producer_handle.prepare_batch(10);
-        //batch.write_for_all(|| 1);
+        let immutable_range2 = range2.immutable();
+        drop(immutable_range);
+        drop(immutable_range2);
+
+        let mut batch = producer_handle.prepare_batch(10);
+        batch.write_for_all(|| 1);
     }
 
     /*
