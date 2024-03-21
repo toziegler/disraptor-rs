@@ -303,11 +303,7 @@ pub struct ConsumerHandle<'a, T, const SIZE: usize> {
 
 impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
     fn update_cached_end(&mut self) {
-        assert!(
-            self.index_consumed.get() <= self.index_end_cached,
-            "Our consumed index should never go past the end"
-        );
-        if self.index_consumed.get() == self.index_end_cached {
+        if self.index_consumed.get() >= self.index_end_cached {
             self.index_end_cached = self
                 .indexes_predecessor_end
                 .iter()
