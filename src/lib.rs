@@ -184,7 +184,8 @@ impl<'a, T, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
     }
 }
 
-struct Mutable<'m, 'h, T, const SIZE: usize> {
+pub struct Mutable<'m, 'h, T, const SIZE: usize> {
+    is_immutable: bool,
     handle: Option<&'m ConsumerHandle<'h, T, SIZE>>,
     index_begin: usize,    // this is the begin of the mutable range and is fixed
     index_consumed: usize, // this is the index that tracks the actual consumption
@@ -199,41 +200,40 @@ struct Mutable<'m, 'h, T, const SIZE: usize> {
 
 impl<T, const SIZE: usize> Drop for Mutable<'_, '_, T, SIZE> {
     fn drop(&mut self) {
-        println!("drop mutable object");
+        debug_assert!(self.is_immutable);
     }
 }
-
-struct Immutable<'a> {
+pub struct Immutable<'a> {
     index_released: &'a CachePadded<AtomicUsize>,
     begin: usize,
     end: usize,
 }
 
-impl Immutable<'_> {}
-// Note: Maintain the order here if it is important to you!
-impl Drop for Immutable<'_> {
-    fn drop(&mut self) {
+impl Range<Immutable<'_>> {
+    // Note: Maintain the order here!
+    pub fn release(&self) {
         // check that we do not decrement the counter
-        if self.end
+        if self.mutability.end
             < self
+                .mutability
                 .index_released
                 .load(std::sync::atomic::Ordering::Relaxed)
         {
             println!("we have a wrong order in sync");
             return; // do not decrement the counter
         }
-        println!("drop update end {}", self.end);
-        self.index_released
-            .store(self.end, std::sync::atomic::Ordering::Release);
+        self.mutability
+            .index_released
+            .store(self.mutability.end, std::sync::atomic::Ordering::Release);
     }
 }
 
-struct Range<Mutability> {
+pub struct Range<Mutability> {
     mutability: Mutability,
 }
 
 impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
-    pub fn consume_until_empty_or_condition(
+    pub fn consume_and_extend_until_empty_or_condition(
         &mut self,
         mut consumer_fn: impl FnMut(&T, usize) -> bool,
     ) {
@@ -265,10 +265,6 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
                 .min()
                 .expect("Could not find minimum value on empty value");
 
-            println!(
-                "{} {}",
-                self.mutability.index_consumed, self.mutability.index_end_cached
-            );
             if self.mutability.index_consumed == self.mutability.index_end_cached {
                 break;
             }
@@ -276,10 +272,33 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
         self.mutability.index_consumed = consumed;
     }
 
+    pub fn consume_until_empty_or_condition(
+        &mut self,
+        mut consumer_fn: impl FnMut(&T, usize) -> bool,
+    ) {
+        let mut consumed = self.mutability.index_consumed;
+        for index in self.mutability.index_consumed..self.mutability.index_end_cached {
+            let element: &T = unsafe {
+                self.mutability
+                    .handle
+                    .unwrap()
+                    .disraptor
+                    .message_buffer
+                    .get_mut((index + 1) % SIZE)
+            };
+            if consumer_fn(element, index + 1) == false {
+                break;
+            }
+            consumed += 1;
+        }
+        self.mutability.index_consumed = consumed;
+    }
+
     pub fn immutable(mut self) -> Range<Immutable<'h>> {
         let handle = self.mutability.handle.take().expect("Handle should exist");
         handle.index_consumed.set(self.mutability.index_consumed); // communicate the state to the
-                                                                   // handle
+        self.mutability.is_immutable = true;
+        // handle
         Range {
             mutability: Immutable {
                 index_released: handle.index_released, // needed to synchronize the range
@@ -317,26 +336,17 @@ impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
         }
     }
 
-    pub fn get_extensible_range<'m>(&'m mut self) -> Range<Mutable<'m, 'a, T, SIZE>> {
+    pub fn get_range<'m>(&'m mut self) -> Range<Mutable<'m, 'a, T, SIZE>> {
         self.update_cached_end();
         Range {
             mutability: Mutable {
+                is_immutable: false,
                 handle: Some(self),
                 index_begin: self.index_consumed.get(),
                 index_consumed: self.index_consumed.get(),
                 index_end_cached: self.index_end_cached,
                 //_data: PhantomData,
             },
-        }
-    }
-
-    pub fn get_fixed_range(&mut self) -> Range<Immutable> {
-        self.update_cached_end();
-        FixedRange {
-            handle: Some(self),
-            index_begin: self.index_consumed.get(),
-            index_consumed: self.index_consumed.get(),
-            index_end_cached: self.index_end_cached,
         }
     }
 }
@@ -358,7 +368,51 @@ mod tests {
     }
 
     #[test]
-    fn get_extensible_range() {
+    fn get_range_extensible() {
+        let dis = Disraptor::<i32, 20>::new(&[1]);
+        _ = dis.get_consumer_handle(0, 0);
+        let mut producer_handle = dis.get_producer_handle();
+        {
+            let mut counter = 0;
+            let mut batch = producer_handle.prepare_batch(10);
+            batch.write_for_all(|| {
+                counter += 1;
+                counter
+            });
+        }
+
+        let mut consumer_handle = dis.get_consumer_handle(0, 0);
+        let mut range = consumer_handle.get_range();
+
+        let mut counter = 0;
+        range.consume_and_extend_until_empty_or_condition(|msg, _| {
+            if counter == 5 {
+                return false;
+            }
+            counter += 1;
+            assert_eq!(*msg, counter);
+            true
+        });
+        {
+            let mut counter = 10;
+            let mut batch = producer_handle.prepare_batch(10);
+            batch.write_for_all(|| {
+                counter += 1;
+                counter
+            });
+        } // synchronize
+        range.consume_and_extend_until_empty_or_condition(|msg, _| {
+            counter += 1;
+            assert_eq!(*msg, counter);
+            true
+        });
+        let immutable_range = range.immutable();
+        immutable_range.release();
+        assert_eq!(counter, 20);
+    }
+
+    #[test]
+    fn get_range_fixed() {
         let dis = Disraptor::<i32, 12>::new(&[1]);
         _ = dis.get_consumer_handle(0, 0);
         let mut producer_handle = dis.get_producer_handle();
@@ -372,7 +426,7 @@ mod tests {
         }
 
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
-        let mut range = consumer_handle.get_extensible_range();
+        let mut range = consumer_handle.get_range();
 
         let mut counter = 0;
         range.consume_until_empty_or_condition(|msg, _| {
@@ -383,31 +437,27 @@ mod tests {
             assert_eq!(*msg, counter);
             true
         });
-        println!("range 1 done ");
         let immutable_range = range.immutable();
-        let mut range2 = consumer_handle.get_extensible_range();
+        let mut range2 = consumer_handle.get_range();
         range2.consume_until_empty_or_condition(|msg, _| {
             counter += 1;
             assert_eq!(*msg, counter);
             true
         });
 
-        println!("range 2 done ");
         range2.consume_until_empty_or_condition(|_, _| {
             assert!(false, "should never happen");
             true
         });
-        println!("range 3 done ");
 
         let immutable_range2 = range2.immutable();
-        drop(immutable_range);
-        drop(immutable_range2);
+        immutable_range.release();
+        immutable_range2.release();
 
         let mut batch = producer_handle.prepare_batch(10);
         batch.write_for_all(|| 1);
     }
 
-    /*
     #[test]
     fn multiple_elements_consumer_until() {
         let dis = Disraptor::<i32, 12>::new(&[1]);
@@ -423,8 +473,8 @@ mod tests {
             });
         }
         counter = 0;
-        let mut batch = consumer_handle.get_prepared_batch();
-        batch.get_until_or_empty(|msg, _| {
+        let mut range = consumer_handle.get_range();
+        range.consume_until_empty_or_condition(|msg, _| {
             if counter == 5 {
                 return false;
             }
@@ -432,17 +482,18 @@ mod tests {
             counter += 1;
             true
         });
-        batch.get_until_or_empty(|msg, _| {
+        range.consume_until_empty_or_condition(|msg, _| {
             assert_eq!(*msg, counter); // 6 5
             counter += 1;
             true
         });
-        batch.get_until_or_empty(|msg, _| {
+        range.consume_until_empty_or_condition(|msg, _| {
             assert!(false, "should never happen"); // 6 5
             true
         });
 
         assert_eq!(counter, 10);
+        range.immutable().release();
     }
     #[test]
     fn multiple_elements() {
@@ -459,12 +510,14 @@ mod tests {
             });
         }
         counter = 0;
-        let mut batch = consumer_handle.get_prepared_batch();
-        batch.get_for_all(|msg, _| {
+        let mut range = consumer_handle.get_range();
+        range.consume_until_empty_or_condition(|msg, _| {
             assert_eq!(*msg, counter);
             counter += 1;
+            true
         });
         assert_eq!(counter, 10);
+        range.immutable().release();
     }
     #[test]
     #[should_panic(expected = "assertion failed")]
@@ -487,13 +540,15 @@ mod tests {
             });
         }
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
-        let mut batch = consumer_handle.get_prepared_batch();
+        let mut batch = consumer_handle.get_range();
         counter = 0;
-        batch.get_for_all(|&msg, _| {
+        batch.consume_until_empty_or_condition(|&msg, _| {
             counter += 1;
             assert_eq!(msg, counter);
+            true
         });
         assert_eq!(counter, 12);
+        batch.immutable().release();
     }
 
     #[test]
@@ -517,12 +572,14 @@ mod tests {
             handle.join().unwrap();
         }
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
-        let mut batch = consumer_handle.get_prepared_batch();
+        let mut range = consumer_handle.get_range();
         let mut sum = 0;
-        batch.get_for_all(|&msg, _| {
+        range.consume_until_empty_or_condition(|&msg, _| {
             sum += msg;
+            true
         });
         assert!(450 == sum);
+        range.immutable().release();
     }
 
     // TODO: Improve interface here
@@ -547,13 +604,15 @@ mod tests {
         }
 
         let mut consumer_handle = dis.get_consumer_handle(0, 0);
-        let mut batch = consumer_handle.get_prepared_batch();
+        let mut batch = consumer_handle.get_range();
         let mut idx = 0;
-        batch.get_for_all(|&msg, _| {
+        batch.consume_until_empty_or_condition(|&msg, _| {
             assert_eq!(msg, values[idx]);
             idx += 1;
+            true
         });
         assert_eq!(idx, values.len());
+        batch.immutable().release();
     }
     #[test]
     #[should_panic(expected = "assertion failed")]
@@ -562,5 +621,4 @@ mod tests {
         let mut producer_handle = dis.get_producer_handle();
         producer_handle.prepare_batch(13); // This should panic
     }
-    */
 }

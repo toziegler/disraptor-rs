@@ -14,10 +14,11 @@ fn main() {
         }
         let mut sum = 0;
         {
-            let mut c_batch = consumer_handle.get_prepared_batch();
-            c_batch.get_for_all(|msg, _| {
+            let mut c_batch = consumer_handle.get_range();
+            c_batch.consume_until_empty_or_condition(|msg, _| {
                 assert_eq!(*msg, 1);
                 sum += *msg;
+                true
             });
             assert_eq!(sum, BATCH_SIZE);
         }

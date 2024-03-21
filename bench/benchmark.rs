@@ -34,11 +34,13 @@ fn main() {
                 let mut sum = 0;
                 while sum < OPERATIONS {
                     //println!("consumer 1");
-                    let mut c_batch = consumer_handle.get_prepared_batch();
-                    c_batch.get_for_all(|msg, _| {
+                    let mut c_batch = consumer_handle.get_range();
+                    c_batch.consume_until_empty_or_condition(|msg, _| {
                         assert_eq!(*msg, 1);
                         sum += *msg;
+                        true
                     });
+                    c_batch.immutable().release();
                 }
             });
         }
@@ -54,11 +56,11 @@ fn main() {
                 let mut all_sum = 0;
                 let mut sum = 0;
                 while sum < OPERATIONS {
-                    let mut c_batch = consumer_handle.get_prepared_batch();
-                    c_batch.get_for_all(|msg, index| {
+                    let mut c_batch = consumer_handle.get_range();
+                    c_batch.consume_until_empty_or_condition(|msg, index| {
                         if index as u64 % CONSUMER_THREADS_2 != id {
                             sum += 1;
-                            return;
+                            return true;
                         }
                         assert_eq!(*msg, 1);
                         sum += *msg;
@@ -71,7 +73,9 @@ fn main() {
                             .sum();
                         assert_eq!(checksum_page, fill as u64 * 256);
                         all_sum += checksum_page;
+                        true
                     });
+                    c_batch.immutable().release();
                 }
                 println!("checksum {}", all_sum);
                 println!("memcopys performed {}", sum);
@@ -84,8 +88,8 @@ fn main() {
                 let mut timer = std::time::Instant::now();
                 let mut sum = 0;
                 while sum < OPERATIONS {
-                    let mut c_batch = consumer_handle.get_prepared_batch();
-                    c_batch.get_for_all(|msg, _| {
+                    let mut c_batch = consumer_handle.get_range();
+                    c_batch.consume_until_empty_or_condition(|msg, _| {
                         assert_eq!(*msg, 1);
                         sum += *msg;
                         if sum % 10_000_000 == 0 {
@@ -98,7 +102,9 @@ fn main() {
                                 10_000_000.0 / duration
                             );
                         }
+                        true
                     });
+                    c_batch.immutable().release();
                 }
             });
         }
