@@ -187,15 +187,15 @@ impl<'a, T, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
 pub struct Mutable<'m, 'h, T, const SIZE: usize> {
     is_immutable: bool,
     handle: Option<&'m ConsumerHandle<'h, T, SIZE>>,
-    index_begin: usize,    // this is the begin of the mutable range and is fixed
-    index_consumed: usize, // this is the index that tracks the actual consumption
+    index_begin: usize,      // this is the begin of the mutable range and is fixed
+    index_consumed: usize,   // this is the index that tracks the actual consumption
     index_end_cached: usize, // this can be updated when we extend the range
-                           // This makes the struct invariant over 'm. It's not required here, but can help the borrow
-                           // checker infer lifetimes in some cases.
-                           // Is this really ~invariant~?  &'a mut T
-                           //                      covariant^      ^ invariant
-                           //                      a: b
-                           //_data: PhantomData<&'m mut ()>,
+    // This makes the struct invariant over 'm. It's not required here, but can help the borrow
+    // checker infer lifetimes in some cases.
+    // Is this really ~invariant~?  &'a mut T
+    //                      covariant^      ^ invariant
+    //                      a: b
+    _data: PhantomData<&'m mut ()>,
 }
 
 impl<T, const SIZE: usize> Drop for Mutable<'_, '_, T, SIZE> {
@@ -341,7 +341,7 @@ impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
                 index_begin: self.index_consumed.get(),
                 index_consumed: self.index_consumed.get(),
                 index_end_cached: self.index_end_cached,
-                //_data: PhantomData,
+                _data: PhantomData,
             },
         }
     }
