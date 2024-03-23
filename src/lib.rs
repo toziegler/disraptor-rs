@@ -233,6 +233,7 @@ pub struct Range<Mutability> {
 }
 
 impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
+    #[inline]
     pub fn consume_and_extend_until_empty_or_condition(
         &mut self,
         mut consumer_fn: impl FnMut(&T, usize) -> bool,
@@ -272,6 +273,7 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
         self.mutability.index_consumed = consumed;
     }
 
+    #[inline]
     pub fn consume_until_empty_or_condition(
         &mut self,
         mut consumer_fn: impl FnMut(&T, usize) -> bool,
@@ -560,7 +562,8 @@ mod tests {
                     let mut producer_handle = dis_clone.get_producer_handle();
                     let mut batch = producer_handle.prepare_batch(10);
                     batch.write_for_all(|| id);
-                })
+                }
+
             })
             .collect();
 
