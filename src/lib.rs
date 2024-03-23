@@ -562,8 +562,7 @@ mod tests {
                     let mut producer_handle = dis_clone.get_producer_handle();
                     let mut batch = producer_handle.prepare_batch(10);
                     batch.write_for_all(|| id);
-                }
-
+                })
             })
             .collect();
 
