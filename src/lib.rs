@@ -39,6 +39,12 @@ impl<T: Copy + Clone, const SIZE: usize> Disraptor<T, SIZE> {
         }
     }
 
+    pub fn init_with(&self, mut init_fn: impl FnMut() -> T) {
+        for i in 0..SIZE {
+            unsafe { self.message_buffer.write(i, init_fn()) };
+        }
+    }
+
     pub fn get_producer_handle(&self) -> ProducerHandle<T, SIZE> {
         let number_consumer_threads = self.topology.iter().sum::<u64>() as usize;
         let begin = number_consumer_threads
@@ -100,6 +106,16 @@ pub struct ProducerBatch<'a, 'b, T, const SIZE: usize> {
 }
 
 impl<'a, 'b, T, const SIZE: usize> ProducerBatch<'a, 'b, T, SIZE> {
+    // this does not move the batch or curretn we can just iterate through it once
+    // this is super unsafe as it requires that we have initialized the element problery
+    // SAFETY:
+    // Every element on the ring must have been initialized properly before!
+    pub unsafe fn for_all(&self, mut consumer_fn: impl FnMut(&mut T)) {
+        for index in self.begin..=self.end {
+            unsafe { consumer_fn(self.handle.disraptor.message_buffer.get_mut(index)) }
+        }
+    }
+
     pub fn write_for_all<F>(&mut self, mut produce_element_fn: F)
     where
         F: FnMut() -> T,
