@@ -116,6 +116,12 @@ impl<'a, 'b, T, const SIZE: usize> ProducerBatch<'a, 'b, T, SIZE> {
         }
     }
 
+    pub unsafe fn for_all_and_sync(&mut self, mut consumer_fn: impl FnMut(&mut T)) {
+        for index in self.begin..=self.end {
+            unsafe { consumer_fn(self.handle.disraptor.message_buffer.get_mut(index % SIZE)) }
+        }
+        self.current = self.end + 1;
+    }
     pub fn write_for_all<F>(&mut self, mut produce_element_fn: F)
     where
         F: FnMut() -> T,
