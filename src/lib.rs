@@ -112,7 +112,7 @@ impl<'a, 'b, T, const SIZE: usize> ProducerBatch<'a, 'b, T, SIZE> {
     // Every element on the ring must have been initialized properly before!
     pub unsafe fn for_all(&self, mut consumer_fn: impl FnMut(&mut T)) {
         for index in self.begin..=self.end {
-            unsafe { consumer_fn(self.handle.disraptor.message_buffer.get_mut(index)) }
+            unsafe { consumer_fn(self.handle.disraptor.message_buffer.get_mut(index % SIZE)) }
         }
     }
 
