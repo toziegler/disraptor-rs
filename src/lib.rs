@@ -207,7 +207,6 @@ impl<'a, T, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
 }
 
 pub struct Mutable<'m, 'h, T, const SIZE: usize> {
-    is_immutable: bool,
     handle: Option<&'m ConsumerHandle<'h, T, SIZE>>,
     index_begin: usize,      // this is the begin of the mutable range and is fixed
     index_consumed: usize,   // this is the index that tracks the actual consumption
@@ -220,14 +219,8 @@ pub struct Mutable<'m, 'h, T, const SIZE: usize> {
     _data: PhantomData<&'m mut ()>,
 }
 
-impl<T, const SIZE: usize> Drop for Mutable<'_, '_, T, SIZE> {
-    fn drop(&mut self) {
-        debug_assert!(self.is_immutable);
-    }
-}
 pub struct Immutable<'a> {
     index_released: &'a CachePadded<AtomicUsize>,
-    begin: usize,
     end: usize,
 }
 
@@ -293,6 +286,11 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
             }
         }
         self.mutability.index_consumed = consumed;
+        self.mutability
+            .handle
+            .unwrap()
+            .index_consumed
+            .set(self.mutability.index_consumed); // communicate the state to the
     }
 
     #[inline]
@@ -316,17 +314,20 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
             consumed += 1;
         }
         self.mutability.index_consumed = consumed;
+        self.mutability
+            .handle
+            .unwrap()
+            .index_consumed
+            .set(self.mutability.index_consumed); // communicate the state to the
     }
 
     pub fn immutable(mut self) -> Range<Immutable<'h>> {
         let handle = self.mutability.handle.take().expect("Handle should exist");
         handle.index_consumed.set(self.mutability.index_consumed); // communicate the state to the
-        self.mutability.is_immutable = true;
-        // handle
+                                                                   // handle
         Range {
             mutability: Immutable {
                 index_released: handle.index_released, // needed to synchronize the range
-                begin: self.mutability.index_begin,
                 end: self.mutability.index_consumed,
             },
         }
@@ -360,7 +361,6 @@ impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
         self.update_cached_end();
         Range {
             mutability: Mutable {
-                is_immutable: false,
                 handle: Some(self),
                 index_begin: self.index_consumed.get(),
                 index_consumed: self.index_consumed.get(),
