@@ -300,7 +300,7 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
     ) {
         let mut consumed = self.mutability.index_consumed;
         for index in self.mutability.index_consumed..self.mutability.index_end_cached {
-            let element: &T = unsafe {
+            let element: &mut T = unsafe {
                 self.mutability
                     .handle
                     .unwrap()
