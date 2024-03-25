@@ -251,7 +251,7 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
     #[inline]
     pub fn consume_and_extend_until_empty_or_condition(
         &mut self,
-        mut consumer_fn: impl FnMut(&T, usize) -> bool,
+        mut consumer_fn: impl FnMut(&mut T, usize) -> bool,
     ) {
         let mut consumed = self.mutability.index_consumed;
         'outer: loop {
@@ -296,7 +296,7 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
     #[inline]
     pub fn consume_until_empty_or_condition(
         &mut self,
-        mut consumer_fn: impl FnMut(&T, usize) -> bool,
+        mut consumer_fn: impl FnMut(&mut T, usize) -> bool,
     ) {
         let mut consumed = self.mutability.index_consumed;
         for index in self.mutability.index_consumed..self.mutability.index_end_cached {
