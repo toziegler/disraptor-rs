@@ -208,6 +208,7 @@ impl<'a, T, const SIZE: usize> ProducerHandle<'a, T, SIZE> {
                 .map(|number| number.load(std::sync::atomic::Ordering::SeqCst))
                 .min()
                 .expect("Could not find minimum value on empty value");
+            unsafe { _mm_pause() }
         }
         ProducerBatch {
             handle: self,
