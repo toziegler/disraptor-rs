@@ -3,7 +3,7 @@ pub mod constants;
 pub mod unchecked_fixed_array;
 
 use cache_padded::CachePadded;
-use std::{marker::PhantomData, sync::atomic::AtomicUsize};
+use std::{arch::x86_64::_mm_pause, marker::PhantomData, sync::atomic::AtomicUsize};
 
 pub use unchecked_fixed_array::UncheckedFixedArray;
 
@@ -163,7 +163,9 @@ impl<'a, 'b, T, const SIZE: usize> Drop for ProducerBatch<'a, 'b, T, SIZE> {
             .released_slots
             .load(std::sync::atomic::Ordering::SeqCst)
             != expected_sequence
-        {}
+        {
+            unsafe { _mm_pause() }
+        }
         self.handle
             .released_slots
             .store(self.end, std::sync::atomic::Ordering::Release);
@@ -348,12 +350,16 @@ pub struct ConsumerHandle<'a, T, const SIZE: usize> {
 impl<'a, T, const SIZE: usize> ConsumerHandle<'a, T, SIZE> {
     fn update_cached_end(&mut self) {
         if self.index_consumed.get() >= self.index_end_cached {
+            let previous_end_cached = self.index_end_cached;
             self.index_end_cached = self
                 .indexes_predecessor_end
                 .iter()
                 .map(|number| number.load(std::sync::atomic::Ordering::SeqCst))
                 .min()
                 .expect("Could not find minimum value on empty value");
+            if previous_end_cached == self.index_end_cached {
+                unsafe { _mm_pause() }
+            }
         }
     }
 

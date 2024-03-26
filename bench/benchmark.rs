@@ -68,43 +68,43 @@ fn main() {
             s.spawn(move || {
                 let mut consumer_handle = disraptor.get_consumer_handle(0, id as usize);
                 let mut sum = 0;
+                let mut messages_seen = 0;
                 while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
                     let mut c_batch = consumer_handle.get_range();
                     c_batch.consume_until_empty_or_condition(|msg, index| {
-                        if (index as u64 & (consumer_threads - 1)) != id {
-                            sum += 1;
+                        if index as u64 & (consumer_threads - 1) != id {
                             return true;
                         }
+                        messages_seen += 1;
                         assert_eq!(**msg, 1);
-                        messages_consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         sum += **msg;
                         true
                     });
+                    /*c_batch.consume_until_empty_or_condition_partitioned(
+                        id as usize,
+                        consumer_threads as usize,
+                        |msg, _| {
+                            messages_seen += 1;
+                            assert_eq!(**msg, 1);
+                            sum += **msg;
+                            true
+                        },
+                    );*/
                     c_batch.immutable().release();
                 }
+                messages_consumed.store(messages_seen, std::sync::atomic::Ordering::Relaxed);
             });
         }
-
-        {
-            let shutdown_signal = shutdown_signal.clone();
-            let message_consumed = messages_consumed.clone();
-            std::thread::spawn(move || {
-                let mut timer = Instant::now();
-                println!("msgs, producer, responder");
-                while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
-                    if timer.elapsed() > Duration::new(1, 0) {
-                        timer = Instant::now();
-                        let mut message_processed = 0;
-                        for b in message_consumed.iter() {
-                            message_processed += b.swap(0, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        println!(
-                            "{},{},{}",
-                            message_processed, producer_threads, consumer_threads
-                        );
-                    }
-                }
-            })
-        }
     });
+
+    let mut throughput = 0;
+    for counter in messages_consumed.iter() {
+        throughput += counter.load(std::sync::atomic::Ordering::Relaxed);
+    }
+    println!(
+        "{}, {}, {}",
+        throughput as f64 / 5.0,
+        producer_threads,
+        consumer_threads
+    );
 }
