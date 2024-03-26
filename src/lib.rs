@@ -15,6 +15,7 @@ pub use unchecked_fixed_array::UncheckedFixedArray;
 pub struct Disraptor<T, const SIZE: usize> {
     message_buffer: UncheckedFixedArray<T>, // backing buffer
     released_slots: [CachePadded<AtomicUsize>; 1],
+    internal_released_slots: [CachePadded<AtomicUsize>; 1],
     head_prepared_slots: CachePadded<AtomicUsize>,
     consumer_counters: Box<[CachePadded<AtomicUsize>]>,
     topology: Vec<u64>,
@@ -29,6 +30,9 @@ impl<T: Copy + Clone, const SIZE: usize> Disraptor<T, SIZE> {
         Self {
             message_buffer: UncheckedFixedArray::<T>::new(SIZE),
             released_slots: [CachePadded::new(AtomicUsize::new(
+                Self::INITIAL_CONSUMER_SLOT,
+            ))],
+            internal_released_slots: [CachePadded::new(AtomicUsize::new(
                 Self::INITIAL_CONSUMER_SLOT,
             ))],
             head_prepared_slots: CachePadded::new(AtomicUsize::new(Self::INITIAL_PRODUCER_SLOT)),
@@ -59,6 +63,7 @@ impl<T: Copy + Clone, const SIZE: usize> Disraptor<T, SIZE> {
             last_consumers_tail: &self.consumer_counters[begin..end],
             cached_last_consumer: Self::INITIAL_CONSUMER_SLOT,
             released_slots: &self.released_slots[0],
+            internal_released_slots: &self.internal_released_slots[0],
             head_prepared_slots: &self.head_prepared_slots,
         }
     }
@@ -160,12 +165,16 @@ impl<'a, 'b, T, const SIZE: usize> Drop for ProducerBatch<'a, 'b, T, SIZE> {
         // NOTE: Blocking
         while self
             .handle
-            .released_slots
+            //.released_slots
+            .internal_released_slots
             .load(std::sync::atomic::Ordering::SeqCst)
             != expected_sequence
         {
             unsafe { _mm_pause() }
         }
+        self.handle
+            .internal_released_slots
+            .store(self.end, std::sync::atomic::Ordering::Release);
         self.handle
             .released_slots
             .store(self.end, std::sync::atomic::Ordering::Release);
@@ -177,6 +186,7 @@ pub struct ProducerHandle<'a, T, const SIZE: usize> {
     last_consumers_tail: &'a [CachePadded<AtomicUsize>],
     cached_last_consumer: usize,
     released_slots: &'a CachePadded<AtomicUsize>,
+    internal_released_slots: &'a CachePadded<AtomicUsize>,
     head_prepared_slots: &'a CachePadded<AtomicUsize>,
 }
 
