@@ -334,6 +334,38 @@ impl<'m, 'h, T, const SIZE: usize> Range<Mutable<'m, 'h, T, SIZE>> {
             .set(self.mutability.index_consumed); // communicate the state to the
     }
 
+    #[inline]
+    pub fn consume_until_empty_or_condition_partition<const PARTITIONS: usize>(
+        &mut self,
+        thread_id: usize,
+        mut consumer_fn: impl FnMut(&mut T, usize) -> bool,
+    ) {
+        let mut consumed = self.mutability.index_consumed;
+        for index in self.mutability.index_consumed..self.mutability.index_end_cached {
+            if (index % PARTITIONS) != thread_id {
+                consumed += 1;
+                continue;
+            }
+            let element: &mut T = unsafe {
+                self.mutability
+                    .handle
+                    .unwrap()
+                    .disraptor
+                    .message_buffer
+                    .get_mut((index + 1) % SIZE)
+            };
+            if consumer_fn(element, index + 1) == false {
+                break;
+            }
+            consumed += 1;
+        }
+        self.mutability.index_consumed = consumed;
+        self.mutability
+            .handle
+            .unwrap()
+            .index_consumed
+            .set(self.mutability.index_consumed); // communicate the state to the
+    }
     pub fn immutable(mut self) -> Range<Immutable<'h>> {
         let handle = self.mutability.handle.take().expect("Handle should exist");
         handle.index_consumed.set(self.mutability.index_consumed); // communicate the state to the
