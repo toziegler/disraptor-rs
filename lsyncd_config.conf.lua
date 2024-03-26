@@ -3,14 +3,14 @@ settings({
 })
 
 hosts = {
-	{ ip = "c01", port = 22 },
+	{ ip = "genoa", port = 22 },
 	{ ip = "c06", port = 22 },
-	{ ip = "c07", port = 22 },
 	{ ip = "c08", port = 22 },
 }
 
 local filter = {
 	"- *.csv",
+	"- /target",
 }
 
 local function findGitignoreFilters()

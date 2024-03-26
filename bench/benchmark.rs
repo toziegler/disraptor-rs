@@ -1,112 +1,110 @@
-use disraptor_rs::Disraptor;
+use disraptor_rs::{cache_padded::CachePadded, Disraptor};
 use rand::prelude::*;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc,
+    },
+    time::{Duration, Instant},
+    usize,
+};
 
-const PRODUCER_THREADS: u64 = 1;
-const CONSUMER_THREADS_1: u64 = 1;
-const CONSUMER_THREADS_2: u64 = 1;
-const CONSUMER_THREADS_3: u64 = 1;
+use clap::Parser;
+
+/// Simple program to greet a person
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = 1)]
+    producer_threads: u64,
+
+    #[arg(short, long, default_value_t = 1)]
+    consumer_threads: u64,
+}
 
 const PRODUCER_BATCH_SIZE: u64 = 1024;
-const PRODUCER_ITERATIONS: u64 = 1_000_000;
-const OPERATIONS: u64 = PRODUCER_ITERATIONS * PRODUCER_BATCH_SIZE;
+const PRODUCER_ITERATIONS: u64 = 100_000;
+//const OPERATIONS: u64 = PRODUCER_ITERATIONS * PRODUCER_BATCH_SIZE * PRODUCER_THREADS;
 
 fn main() {
-    let disraptor = std::sync::Arc::new(Disraptor::<u64, 524_288>::new(&[
-        CONSUMER_THREADS_1,
-        CONSUMER_THREADS_2,
-        CONSUMER_THREADS_3,
+    let args = Args::parse();
+    let consumer_threads = args.consumer_threads;
+    let producer_threads = args.producer_threads;
+
+    assert!(consumer_threads.is_power_of_two());
+    assert!(producer_threads.is_power_of_two());
+
+    let operations: u64 = PRODUCER_ITERATIONS * PRODUCER_BATCH_SIZE * producer_threads;
+    let disraptor = std::sync::Arc::new(Disraptor::<CachePadded<u64>, 524_288>::new(&[
+        consumer_threads,
     ]));
+    let messages_consumed: Arc<Vec<std::sync::Arc<CachePadded<AtomicU64>>>> = Arc::new(vec![
+            Arc::new(CachePadded::new(AtomicU64::new(0)));
+            consumer_threads as usize
+        ]);
+    let shutdown_signal = std::sync::Arc::new(AtomicBool::new(false));
     std::thread::scope(|s| {
-        for _ in 0..PRODUCER_THREADS {
+        {
+            let shutdown_signal = shutdown_signal.clone();
+            s.spawn(move || {
+                std::thread::sleep(Duration::new(5, 0));
+                shutdown_signal.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        for _ in 0..producer_threads {
             s.spawn(|| {
                 let mut producer_handle = disraptor.get_producer_handle();
-                for _ in 0..PRODUCER_ITERATIONS {
+                while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
                     let mut batch = producer_handle.prepare_batch(PRODUCER_BATCH_SIZE as usize);
-                    batch.write_for_all(|| 1);
+                    batch.write_for_all(|| CachePadded::new(1));
                 }
             });
         }
-        for id in 0..CONSUMER_THREADS_1 {
+        for id in 0..consumer_threads {
+            let shutdown_signal = shutdown_signal.clone();
             let disraptor = Arc::clone(&disraptor);
+            let messages_consumed = messages_consumed[id as usize].clone();
             s.spawn(move || {
                 let mut consumer_handle = disraptor.get_consumer_handle(0, id as usize);
                 let mut sum = 0;
-                while sum < OPERATIONS {
-                    //println!("consumer 1");
-                    let mut c_batch = consumer_handle.get_range();
-                    c_batch.consume_until_empty_or_condition(|msg, _| {
-                        assert_eq!(*msg, 1);
-                        sum += *msg;
-                        true
-                    });
-                    c_batch.immutable().release();
-                }
-            });
-        }
-        for id in 0..CONSUMER_THREADS_2 {
-            let disraptor = Arc::clone(&disraptor);
-            s.spawn(move || {
-                let mut consumer_handle = disraptor.get_consumer_handle(1, id as usize);
-                //let mut large_buffer = Box::new([[0_u8; 4096]; 65000]);
-                //let mut large_buffer = vec![0_u8; 4096 * 65000].into_boxed_slice();
-                let mut large_buffer: Vec<[u8; 4096]> = (0..65000).map(|_| [0_u8; 4096]).collect();
-                let mut rng = rand::thread_rng();
-
-                let mut all_sum = 0;
-                let mut sum = 0;
-                while sum < OPERATIONS {
+                while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
                     let mut c_batch = consumer_handle.get_range();
                     c_batch.consume_until_empty_or_condition(|msg, index| {
-                        if index as u64 % CONSUMER_THREADS_2 != id {
+                        if (index as u64 & (consumer_threads - 1)) != id {
                             sum += 1;
                             return true;
                         }
-                        assert_eq!(*msg, 1);
-                        sum += *msg;
-                        let slot_id = rng.gen_range(0..65000);
-                        let fill: u8 = slot_id as u8;
-                        large_buffer[slot_id][0..256].fill(fill);
-                        let checksum_page: u64 = large_buffer[slot_id][0..256]
-                            .iter()
-                            .map(|number| *number as u64)
-                            .sum();
-                        assert_eq!(checksum_page, fill as u64 * 256);
-                        all_sum += checksum_page;
+                        assert_eq!(**msg, 1);
+                        messages_consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        sum += **msg;
                         true
                     });
                     c_batch.immutable().release();
                 }
-                println!("checksum {}", all_sum);
-                println!("memcopys performed {}", sum);
             });
         }
-        for id in 0..CONSUMER_THREADS_3 {
-            let disraptor = Arc::clone(&disraptor);
-            s.spawn(move || {
-                let mut consumer_handle = disraptor.get_consumer_handle(2, id as usize);
-                let mut timer = std::time::Instant::now();
-                let mut sum = 0;
-                while sum < OPERATIONS {
-                    let mut c_batch = consumer_handle.get_range();
-                    c_batch.consume_until_empty_or_condition(|msg, _| {
-                        assert_eq!(*msg, 1);
-                        sum += *msg;
-                        if sum % 10_000_000 == 0 {
-                            let duration = timer.elapsed().as_secs_f64();
-                            timer = Instant::now();
-                            println!(
-                                "{}, {},  {}",
-                                PRODUCER_THREADS,
-                                CONSUMER_THREADS_2,
-                                10_000_000.0 / duration
-                            );
+
+        {
+            let shutdown_signal = shutdown_signal.clone();
+            let message_consumed = messages_consumed.clone();
+            std::thread::spawn(move || {
+                let mut timer = Instant::now();
+                println!("msgs, producer, responder");
+                while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
+                    if timer.elapsed() > Duration::new(1, 0) {
+                        timer = Instant::now();
+                        let mut message_processed = 0;
+                        for b in message_consumed.iter() {
+                            message_processed += b.swap(0, std::sync::atomic::Ordering::Relaxed);
                         }
-                        true
-                    });
-                    c_batch.immutable().release();
+                        println!(
+                            "{},{},{}",
+                            message_processed, producer_threads, consumer_threads
+                        );
+                    }
                 }
-            });
+            })
         }
     });
 }
